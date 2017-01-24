@@ -4618,12 +4618,17 @@ namespace ts {
             const typeParameter = getTypeParameterFromMappedType(type);
             const constraintType = getConstraintTypeFromMappedType(type);
             const templateType = getTemplateTypeFromMappedType(type);
+            //modifiersType is the 'T' in 'keyof T'
             const modifiersType = getApparentType(getModifiersTypeFromMappedType(type));
             const templateReadonly = !!type.declaration.readonlyToken;
             const templateOptional = !!type.declaration.questionToken;
             if (type.declaration.typeParameter.constraint.kind === SyntaxKind.TypeOperator) {
                 // We have a { [P in keyof T]: X }
-                forEachType(getLiteralTypeFromPropertyNames(modifiersType), addMemberForKeyType);
+                //forEachType(getLiteralTypeFromPropertyNames(modifiersType), addMemberForKeyType);
+                for (const propertySymbol of getPropertiesOfType(modifiersType)) {
+                    addMemberForKeyType(getLiteralTypeFromPropertyName(propertySymbol), propertySymbol);
+                }
+
                 if (getIndexInfoOfType(modifiersType, IndexKind.String)) {
                     addMemberForKeyType(stringType);
                 }
@@ -4638,7 +4643,7 @@ namespace ts {
             }
             setStructuredTypeMembers(type, members, emptyArray, emptyArray, stringIndexInfo, undefined);
 
-            function addMemberForKeyType(t: Type) {
+            function addMemberForKeyType(t: Type, propertySymbol?: Symbol) {
                 // Create a mapper from T to the current iteration type constituent. Then, if the
                 // mapped type is itself an instantiated type, combine the iteration mapper with the
                 // instantiation mapper.
@@ -4654,6 +4659,9 @@ namespace ts {
                     const prop = <TransientSymbol>createSymbol(SymbolFlags.Property | SymbolFlags.Transient | (isOptional ? SymbolFlags.Optional : 0), propName);
                     prop.type = propType;
                     prop.isReadonly = templateReadonly || modifiersProp && isReadonlySymbol(modifiersProp);
+                    if (propertySymbol) {
+                        prop.mappedTypeOrigin = propertySymbol;
+                    }
                     members.set(propName, prop);
                 }
                 else if (t.flags & TypeFlags.String) {
@@ -6249,6 +6257,7 @@ namespace ts {
         function getTypeFromMappedTypeNode(node: MappedTypeNode): Type {
             const links = getNodeLinks(node);
             if (!links.resolvedType) {
+                //!!!!! We want to set its properties' links here????
                 const type = <MappedType>createObjectType(ObjectFlags.Mapped, node.symbol);
                 type.declaration = node;
                 type.aliasSymbol = getAliasSymbolForTypeNode(node);
@@ -6851,8 +6860,8 @@ namespace ts {
             if (type.flags & TypeFlags.TypeParameter) {
                 return mapper(<TypeParameter>type);
             }
-            if (type.flags & TypeFlags.Object) {
-                if ((<ObjectType>type).objectFlags & ObjectFlags.Anonymous) {
+            if (isObjectType(type)) {
+                if (type.objectFlags & ObjectFlags.Anonymous) {
                     // If the anonymous type originates in a declaration of a function, method, class, or
                     // interface, in an object type literal, or in an object literal expression, we may need
                     // to instantiate the type because it might reference a type parameter. We skip instantiation
@@ -6861,13 +6870,13 @@ namespace ts {
                     // instantiation.
                     return type.symbol &&
                         type.symbol.flags & (SymbolFlags.Function | SymbolFlags.Method | SymbolFlags.Class | SymbolFlags.TypeLiteral | SymbolFlags.ObjectLiteral) &&
-                        ((<ObjectType>type).objectFlags & ObjectFlags.Instantiated || isSymbolInScopeOfMappedTypeParameter(type.symbol, mapper)) ?
+                        (type.objectFlags & ObjectFlags.Instantiated || isSymbolInScopeOfMappedTypeParameter(type.symbol, mapper)) ?
                         instantiateCached(type, mapper, instantiateAnonymousType) : type;
                 }
-                if ((<ObjectType>type).objectFlags & ObjectFlags.Mapped) {
+                if (type.objectFlags & ObjectFlags.Mapped) {
                     return instantiateCached(type, mapper, instantiateMappedType);
                 }
-                if ((<ObjectType>type).objectFlags & ObjectFlags.Reference) {
+                if (type.objectFlags & ObjectFlags.Reference) {
                     return createTypeReference((<TypeReference>type).target, instantiateTypes((<TypeReference>type).typeArguments, mapper));
                 }
             }
@@ -6884,6 +6893,10 @@ namespace ts {
                 return getIndexedAccessType(instantiateType((<IndexedAccessType>type).objectType, mapper), instantiateType((<IndexedAccessType>type).indexType, mapper));
             }
             return type;
+        }
+
+        function isObjectType(type: Type): type is ObjectType { //move
+            return (type.flags & TypeFlags.Object) !== 0;
         }
 
         function instantiateIndexInfo(info: IndexInfo, mapper: TypeMapper): IndexInfo {
@@ -20213,7 +20226,7 @@ namespace ts {
             return getNamedMembers(propsByName);
         }
 
-        function getRootSymbols(symbol: Symbol): Symbol[] {
+        function getRootSymbols(symbol: Symbol): Symbol[] { //!!!
             if (symbol.flags & SymbolFlags.SyntheticProperty) {
                 const symbols: Symbol[] = [];
                 const name = symbol.name;
@@ -20230,6 +20243,11 @@ namespace ts {
                     const links = symbol as SymbolLinks;
                     return [links.leftSpread, links.rightSpread];
                 }
+                else if ((symbol as SymbolLinks).mappedTypeOrigin) {
+                    //TODO: need another recursive call to getRootSymbols?
+                    return [(symbol as SymbolLinks).mappedTypeOrigin];
+                }
+
                 let target: Symbol;
                 let next = symbol;
                 while (next = getSymbolLinks(next).target) {
